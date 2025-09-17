@@ -1,0 +1,240 @@
+---
+title: "Hypertension treatment - Clinical Trial Data Analysis and RBM"
+author: "Tomasz Baczkun"
+date: "2025-09-17"
+---
+___
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include = FALSE}
+library('here')
+library('tidyverse')
+library('ggplot2')
+library('gridExtra')
+```
+
+### Objective
+
+This is the statistical analysis of a Phase III randomized control clinical trial data. The aim is to assess the efficiency of a new hypertension drug - CardioX (Drug A) -  against an active comparator (Drug B) and placebo. Additionally, risk base monitoring (RBM) will be conducted.
+
+### Source
+
+The data were synthetically created by the kaggle user Isabella D., and can be found [here](https://www.kaggle.com/datasets/isabelladil/phase-iii-clinical-trial-dataset).
+
+___
+
+### Data overview
+
+```{r}
+imported <- here('data', 'clean_data.rds')
+data <- readRDS(imported)
+df <- data
+str(df)
+```
+
+#### Overview of the continuous variables:
+
+```{r}
+col_to_plot_num <- c("age", "systolic_bp", "diastolic_bp", "cholesterol_level", 'adverse_events')  # numeric only
+
+plots <- list()
+
+for(name in col_to_plot_num){
+  p <- ggplot(df, aes(x = treatment_group, y = .data[[name]], fill = treatment_group)) +
+    stat_summary(fun = mean, geom = "bar") +
+    stat_summary(fun.data = mean_sdl, fun.args = list(mult = 1),  # SD
+                 geom = "errorbar", width = 0.2) +
+    ylab(paste("Mean", name)) +
+    labs(fill = "Treatment Group") +
+    theme_minimal() 
+  
+  plots[[name]] <- p
+}
+
+grid.arrange(grobs = plots, nrow = 3, ncol = 2)
+```
+<br>
+<br>
+
+#### Overview of the registration dates:
+
+```{r}
+min_date <- as.Date(summary(df$enrollment_date)[1])
+max_date <- as.Date(summary(df$enrollment_date)[6])
+
+
+ggplot(df, aes(treatment_group, enrollment_date, fill = treatment_group)) +
+  stat_summary(fun = 'mean', geom = 'bar') +
+  stat_summary(fun.data = mean_sdl, fun.args = list(mult = 1),
+               geom = 'errorbar', width = 0.2) +
+  coord_cartesian(ylim = c(min_date, max_date)) +
+  theme_minimal()
+
+```
+<br>
+<br>
+
+#### Overview of the binary variables:
+
+```{r, include}
+col_to_plot_perc <- c('gender', 'dropout', 'AE_present')
+
+plots_perc <- list()
+
+for(name in col_to_plot_perc){
+  p <- ggplot(df, aes(treatment_group, fill = .data[[name]]))+
+    geom_bar(position = 'fill')+
+    scale_y_continuous(labels = scales::percent_format()) +
+    ylab('Percentage') +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 40, hjust = 1))
+  
+  plots_perc[[name]] <- p
+}
+grid.arrange(grobs = plots_perc, nrow = 1, ncol = 3)
+```
+
+
+Visual analysis indicates no conclusive differences in between the treatment groups with respect to other variables.
+
+### Efficiency
+
+The efficiency of CordiaX (Drug A) against Drug B and placebo was tested with respect to systolic and diastolic blood pressure, while taking into account cholesterol level, age and gender. As MANOVA analysis was inappropriate due to the violation of the multivariate normality of the residuals assumption (see Appendix A.) PERMANOVA was conducted in its place. The results were as follows:
+
+
+```{r, include = F}
+
+library(vegan)
+
+```
+
+```{r}
+df$systolic_bp_scaled <- scale(df$systolic_bp)
+df$diastolic_bp_scaled <- scale(df$diastolic_bp)
+
+#homogeneity of dispersion assumption
+
+X <- df[c('systolic_bp_scaled', 'diastolic_bp_scaled')]
+D <- dist(X, 'euclidian')
+
+bd <- betadisper(D, df$treatment_group)
+perm_results <- permutest(bd, permutations = 1000)
+#perm_results #assumption is met 
+
+#permanova testing
+
+set.seed(1976)
+
+fit <- adonis2(D ~ treatment_group + cholesterol_level + age + gender,
+               data = df, permutations = 1000, parallel = 20, by = 'margin')
+
+fit
+
+```
+
+(The assumption of homogeneity of multivariate dispersion was met. For the details, see Appendix B.)
+
+No variance in the systolic and diastolic blood pressure was significantly explained by the treatment group.
+The only significant predictor was the cholesterol, but the variance of systolic and diastolic blood pressure it explained is trivial.
+Hence, there is no evidence of the superior efficiency of Drug A over Drug B or the placebo.
+
+### RBM
+
+Facilities were investigated with respect to the adverse events, dropouts, systolic and diastolic blood pressure.
+
+```{r}
+
+df_summary <- df %>%
+  group_by(site_id) %>%
+  summarise(mean_adverse_events = mean(adverse_events),
+            mean_dp = mean(as.numeric(dropout) - 1),
+            mean_systolic = mean(systolic_bp),
+            mean_diastolic = mean(diastolic_bp)) %>%
+  arrange(desc(mean_adverse_events))
+
+
+colnames_summary <- colnames(df_summary)[-1]
+
+colors <- c('green', 'salmon', 'blue', 'goldenrod')
+color_id = 1
+summary_plots <- list()
+for(name in colnames_summary){
+  p <- ggplot(df_summary, aes(x = site_id, y = .data[[name]], fill = .data[[name]]))+
+          geom_col() +
+          scale_fill_gradient(low = paste0('light', colors[color_id]), high = paste0('dark', colors[color_id]))
+          theme_minimal()
+  summary_plots[[name]] <- p
+  color_id <- color_id + 1
+}
+
+grid.arrange(grobs = summary_plots, nrow = 2, ncol = 2)
+
+```
+
+While difference between patients' systolic and diastolic blood pressure between the facilities is negligible, some sites showed high number of adverse events and dropouts per patients. 
+
+IDs of facilities exhibiting high mean of adverse events: 9, 13, 48.
+
+IDs of facilities exhibiting high mean of dropouts: 6, 27, 34.
+
+IDs of other facilities found in top 10 highest scores of both mean adverse events and mean dropouts: 20, 43, 48.
+
+All of the above mentioned facilities are flagged for investigation, with a reccomendation to pay a special attention to facility 48.
+
+### Summary
+
+There is no conclusive evidence that CardioX (Drug A) outperforms Drug B or placebo. Moreover, facilities with alarmingly high level of dropouts and adverse events were identified and flagged for inspection, namely: 6, 9, 13, 20, 27, 34, 43, 48. 
+
+
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+
+#### Appendix A
+```{r, include = F}
+mancova_model <- manova(cbind(systolic_bp, diastolic_bp) ~ treatment_group + age + gender + cholesterol_level, data = df)
+summary(mancova_model, test = 'Wilks')
+
+```
+
+```{r}
+#normality of residuals assumption
+
+res <- residuals(mancova_model)
+
+par(mfrow = c(1,2))
+
+#systolic_bp qqplot
+qqnorm(res[, 'systolic_bp'], main = 'systolic_bp')
+qqline(res[, 'systolic_bp'], col='red')
+
+#diastolic_bp qqplot
+qqnorm(res[, 'diastolic_bp'], main = 'diastolic_bp')
+qqline(res[, 'diastolic_bp'], col = 'blue')
+```
+
+#### Appendix B
+```{r}
+bd <- betadisper(D, df$treatment_group)
+perm_results <- permutest(bd, permutations = 1000)
+perm_results #assumption is met 
+
+```
